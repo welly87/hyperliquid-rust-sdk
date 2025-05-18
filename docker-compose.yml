@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  nats:
+    image: nats:2.9
+    ports:
+      - "4222:4222"
+    command: "-js"  # Enable JetStream
+    healthcheck:
+      test: ["CMD", "nats", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  hyperliquid-nats:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - NATS_URL=nats://nats:4222
+      - NATS_SUBJECT=hyperliquid.orders
+      - HYPERLIQUID_API_URL=https://api.hyperliquid.xyz
+      - RUST_LOG=info
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
