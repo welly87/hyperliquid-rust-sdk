@@ -11,7 +11,7 @@ use super::MessageType;
 pub struct UpdateIsolatedMarginRequest {
     /// The asset to update margin for
     pub asset: String,
-    
+
     /// The amount to add (positive) or remove (negative)
     pub amount: f64,
 }
@@ -30,10 +30,9 @@ impl ExchangeMessage for UpdateIsolatedMarginRequest {
     fn message_type_str(&self) -> &'static str {
         "update_isolated_margin"
     }
-    
+
     fn message_type() -> MessageType {
-        // This will be overridden by the impl_message! macro
-        unreachable!()
+        MessageType::UpdateIsolatedMargin
     }
 }
 
@@ -42,7 +41,7 @@ impl ExchangeMessage for UpdateIsolatedMarginRequest {
 pub struct ApproveAgentRequest {
     /// The agent address to approve
     pub agent_address: String,
-    
+
     /// Optional agent name
     pub agent_name: Option<String>,
 }
@@ -55,7 +54,7 @@ impl ApproveAgentRequest {
             agent_name: None,
         }
     }
-    
+
     /// Set the agent name
     pub fn with_agent_name(mut self, name: &str) -> Self {
         self.agent_name = Some(name.to_string());
@@ -67,10 +66,9 @@ impl ExchangeMessage for ApproveAgentRequest {
     fn message_type_str(&self) -> &'static str {
         "approve_agent"
     }
-    
+
     fn message_type() -> MessageType {
-        // This will be overridden by the impl_message! macro
-        unreachable!()
+        MessageType::ApproveAgent
     }
 }
 
@@ -94,10 +92,9 @@ impl ExchangeMessage for SetReferrerRequest {
     fn message_type_str(&self) -> &'static str {
         "set_referrer"
     }
-    
+
     fn message_type() -> MessageType {
-        // This will be overridden by the impl_message! macro
-        unreachable!()
+        MessageType::SetReferrer
     }
 }
 
@@ -106,7 +103,7 @@ impl ExchangeMessage for SetReferrerRequest {
 pub struct ApproveBuilderFeeRequest {
     /// The builder address
     pub builder: String,
-    
+
     /// The maximum fee rate (as a string to handle decimal precision)
     pub max_fee_rate: String,
 }
@@ -125,9 +122,8 @@ impl ExchangeMessage for ApproveBuilderFeeRequest {
     fn message_type_str(&self) -> &'static str {
         "approve_builder_fee"
     }
-    
+
     fn message_type() -> MessageType {
-        // This will be overridden by the impl_message! macro
-        unreachable!()
+        MessageType::ApproveBuilderFee
     }
 }
