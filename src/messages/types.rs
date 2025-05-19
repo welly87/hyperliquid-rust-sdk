@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 /// Message type identifiers
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MessageType {
     // Order messages (0x0-0x0F)
     Order = 0x01,

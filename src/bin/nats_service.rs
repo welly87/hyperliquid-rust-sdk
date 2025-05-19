@@ -1,7 +1,8 @@
 use async_nats::connect;
+use bytes::Bytes;
 use ethers::signers::LocalWallet;
-use futures_util::stream::StreamExt;
-use hyperliquid_rust_sdk::messages::{ExchangeMessage, Message};
+use futures::{future::BoxFuture, StreamExt};
+use hyperliquid_rust_sdk::messages::ExchangeMessage;
 use hyperliquid_rust_sdk::{
     messages::{
         ApproveAgentRequest, ApproveBuilderFeeRequest, CancelOrderRequest, ClassTransferRequest,
@@ -12,8 +13,37 @@ use hyperliquid_rust_sdk::{
     ClientOrderRequest, ExchangeClient, MarketOrderParams,
 };
 use log::{error, info, LevelFilter};
+use lazy_static::lazy_static;
+use std::collections::HashMap;
 use std::env;
 use uuid::Uuid;
+
+type HandlerFuture<'a> = BoxFuture<'a, Result<(), Box<dyn std::error::Error>>>;
+type HandlerFn = for<'a> fn(Bytes, &'a ExchangeClient) -> HandlerFuture<'a>;
+
+lazy_static! {
+    static ref HANDLERS: HashMap<MessageType, HandlerFn> = {
+        let mut m: HashMap<MessageType, HandlerFn> = HashMap::new();
+        m.insert(MessageType::Order, order_handler as HandlerFn);
+        m.insert(MessageType::CancelOrder, cancel_handler as HandlerFn);
+        m.insert(MessageType::ModifyOrder, modify_order_handler as HandlerFn);
+        m.insert(MessageType::UpdateLeverage, update_leverage_handler as HandlerFn);
+        m.insert(MessageType::Transfer, transfer_handler as HandlerFn);
+        m.insert(MessageType::Withdraw, withdraw_handler as HandlerFn);
+        m.insert(MessageType::ClassTransfer, class_transfer_handler as HandlerFn);
+        m.insert(
+            MessageType::UpdateIsolatedMargin,
+            update_isolated_margin_handler as HandlerFn,
+        );
+        m.insert(MessageType::ApproveAgent, approve_agent_handler as HandlerFn);
+        m.insert(MessageType::SetReferrer, set_referrer_handler as HandlerFn);
+        m.insert(
+            MessageType::ApproveBuilderFee,
+            approve_builder_fee_handler as HandlerFn,
+        );
+        m
+    };
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,84 +91,17 @@ async fn process_message(
     msg: &async_nats::Message,
     client: &ExchangeClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let data = &msg.payload;
+    let data = msg.payload.clone();
     if data.len() < 4 {
         return Err("message too short".into());
     }
     let header_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
     let header: MessageHeader = rmp_serde::from_slice(&data[4..4 + header_len])?;
 
-    match header.msg_type {
-        MessageType::Order => {
-            let req = <OrderRequest as ExchangeMessage>::from_msgpack(data)?;
-            handle_order(req, client).await?
-        }
-        MessageType::CancelOrder => {
-            let req = <CancelOrderRequest as ExchangeMessage>::from_msgpack(data)?;
-            handle_cancel(req, client).await?
-        }
-        MessageType::ModifyOrder => {
-            log::warn!("modify order message handling not implemented");
-        }
-        MessageType::UpdateLeverage => {
-            let req = <UpdateLeverageRequest as ExchangeMessage>::from_msgpack(data)?;
-            client
-                .update_leverage(req.leverage, &req.asset, req.is_cross, None)
-                .await?;
-        }
-        MessageType::Transfer => {
-            let req = <TransferRequest as ExchangeMessage>::from_msgpack(data)?;
-            if req.asset.to_uppercase() == "USDC" {
-                client
-                    .usdc_transfer(&req.amount, &req.destination, None)
-                    .await?;
-            } else {
-                // treat as spot transfer with token in asset field
-                client
-                    .spot_transfer(&req.amount, &req.destination, &req.asset, None)
-                    .await?;
-            }
-        }
-        MessageType::Withdraw => {
-            let req = <WithdrawRequest as ExchangeMessage>::from_msgpack(data)?;
-            client
-                .withdraw_from_bridge(&req.amount, &req.destination, None)
-                .await?;
-        }
-        MessageType::ClassTransfer => {
-            // Try class transfer first
-            if let Ok(req) = <ClassTransferRequest as ExchangeMessage>::from_msgpack(data) {
-                client.class_transfer(req.amount, req.to_perp, None).await?;
-            } else if let Ok(req) = <VaultTransferRequest as ExchangeMessage>::from_msgpack(data) {
-                let addr = req.vault_address.as_deref().and_then(|a| a.parse().ok());
-                client
-                    .vault_transfer(req.is_deposit, req.usd, addr, None)
-                    .await?;
-            } else {
-                log::warn!("Unknown class transfer message");
-            }
-        }
-        MessageType::UpdateIsolatedMargin => {
-            let req = <UpdateIsolatedMarginRequest as ExchangeMessage>::from_msgpack(data)?;
-            client
-                .update_isolated_margin(req.amount, &req.asset, None)
-                .await?;
-        }
-        MessageType::ApproveAgent => {
-            let _req = <ApproveAgentRequest as ExchangeMessage>::from_msgpack(data)?;
-            let (_key, _res) = client.approve_agent(None).await?;
-            info!("Approved agent: {}", _key);
-        }
-        MessageType::SetReferrer => {
-            let req = <SetReferrerRequest as ExchangeMessage>::from_msgpack(data)?;
-            client.set_referrer(req.code, None).await?;
-        }
-        MessageType::ApproveBuilderFee => {
-            let req = <ApproveBuilderFeeRequest as ExchangeMessage>::from_msgpack(data)?;
-            client
-                .approve_builder_fee(req.builder, req.max_fee_rate, None)
-                .await?;
-        }
+    if let Some(handler) = HANDLERS.get(&header.msg_type) {
+        handler(data, client).await?
+    } else {
+        log::warn!("No handler registered for {:?}", header.msg_type);
     }
     Ok(())
 }
@@ -200,4 +163,114 @@ async fn handle_cancel(
         client.cancel_by_cloid(cancel, None).await?;
     }
     Ok(())
+}
+
+fn order_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let req = <OrderRequest as ExchangeMessage>::from_msgpack(&data)?;
+        handle_order(req, client).await
+    })
+}
+
+fn cancel_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let req = <CancelOrderRequest as ExchangeMessage>::from_msgpack(&data)?;
+        handle_cancel(req, client).await
+    })
+}
+
+fn modify_order_handler<'a>(_data: Bytes, _client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        log::warn!("modify order message handling not implemented");
+        Ok(())
+    })
+}
+
+fn update_leverage_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let req = <UpdateLeverageRequest as ExchangeMessage>::from_msgpack(&data)?;
+        client
+            .update_leverage(req.leverage, &req.asset, req.is_cross, None)
+            .await?;
+        Ok(())
+    })
+}
+
+fn transfer_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let req = <TransferRequest as ExchangeMessage>::from_msgpack(&data)?;
+        if req.asset.to_uppercase() == "USDC" {
+            client
+                .usdc_transfer(&req.amount, &req.destination, None)
+                .await?;
+        } else {
+            client
+                .spot_transfer(&req.amount, &req.destination, &req.asset, None)
+                .await?;
+        }
+        Ok(())
+    })
+}
+
+fn withdraw_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let req = <WithdrawRequest as ExchangeMessage>::from_msgpack(&data)?;
+        client
+            .withdraw_from_bridge(&req.amount, &req.destination, None)
+            .await?;
+        Ok(())
+    })
+}
+
+fn class_transfer_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        if let Ok(req) = <ClassTransferRequest as ExchangeMessage>::from_msgpack(&data) {
+            client.class_transfer(req.amount, req.to_perp, None).await?;
+        } else if let Ok(req) = <VaultTransferRequest as ExchangeMessage>::from_msgpack(&data) {
+            let addr = req.vault_address.as_deref().and_then(|a| a.parse().ok());
+            client
+                .vault_transfer(req.is_deposit, req.usd, addr, None)
+                .await?;
+        } else {
+            log::warn!("Unknown class transfer message");
+        }
+        Ok(())
+    })
+}
+
+fn update_isolated_margin_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let req = <UpdateIsolatedMarginRequest as ExchangeMessage>::from_msgpack(&data)?;
+        client
+            .update_isolated_margin(req.amount, &req.asset, None)
+            .await?;
+        Ok(())
+    })
+}
+
+fn approve_agent_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let _req = <ApproveAgentRequest as ExchangeMessage>::from_msgpack(&data)?;
+        let (_key, _res) = client.approve_agent(None).await?;
+        info!("Approved agent: {}", _key);
+        Ok(())
+    })
+}
+
+fn set_referrer_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let req = <SetReferrerRequest as ExchangeMessage>::from_msgpack(&data)?;
+        client.set_referrer(req.code, None).await?;
+        Ok(())
+    })
+}
+
+fn approve_builder_fee_handler<'a>(data: Bytes, client: &'a ExchangeClient) -> HandlerFuture<'a> {
+    Box::pin(async move {
+        let req = <ApproveBuilderFeeRequest as ExchangeMessage>::from_msgpack(&data)?;
+        client
+            .approve_builder_fee(req.builder, req.max_fee_rate, None)
+            .await?;
+        Ok(())
+    })
 }
