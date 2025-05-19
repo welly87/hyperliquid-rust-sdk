@@ -90,3 +90,17 @@ You can use the `nats` CLI to test the service:
 # Publish a test message
 nats pub hyperliquid.orders '{"action":"market_order","coin":"BTC","is_buy":true,"sz":"0.01"}'
 ```
+
+## Adding New Message Types
+
+Message handlers are registered in a global `HashMap` inside
+`src/bin/nats_service.rs`. To support a new message:
+
+1. Create a new struct implementing `ExchangeMessage` in `src/messages`.
+2. Add an async handler function that deserializes the message and calls the
+   appropriate `ExchangeClient` method.
+3. Insert the handler into the `HANDLERS` map with the corresponding
+   `MessageType`.
+
+Once added, any message of that type published to the configured NATS subject
+will be routed to your handler automatically.
